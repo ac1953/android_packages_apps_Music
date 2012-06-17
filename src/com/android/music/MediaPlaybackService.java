@@ -85,6 +85,10 @@ public class MediaPlaybackService extends Service {
     public static final String REPEATMODE_CHANGED = "com.android.music.repeatmodechanged";
     public static final String SHUFFLEMODE_CHANGED = "com.android.music.shufflemodechanged";
 
+    public static final String ALARM_ALERT_ACTION = "com.android.deskclock.ALARM_ALERT";
+    public static final String ALARM_DONE_ACTION = "com.android.deskclock.ALARM_DONE";
+    public static final String ALARM_SNOOZE_ACTION = "com.android.deskclock.ALARM_SNOOZE";
+
     public static final String SERVICECMD = "com.android.music.musicservicecommand";
     public static final String CMDNAME = "command";
     public static final String CMDTOGGLEPAUSE = "togglepause";
@@ -154,6 +158,7 @@ public class MediaPlaybackService extends Service {
     private boolean mQueueIsSaveable = true;
     // used to track what type of audio focus loss caused the playback to pause
     private boolean mPausedByTransientLossOfFocus = false;
+    private boolean mPausedByIncomingAlarm = false;
     // used to track current volume
     private float mCurrentVolume = 1.0f;
 
@@ -254,9 +259,21 @@ public class MediaPlaybackService extends Service {
                         case AudioManager.AUDIOFOCUS_GAIN:
                             Log.v(LOGTAG, "AudioFocus: received AUDIOFOCUS_GAIN");
                             if(isPlaying() || mPausedByTransientLossOfFocus) {
+                                TelephonyManager telephonyManager =
+                                    (TelephonyManager) getSystemService(Context.TELEPHONY_SERVICE);
+
+                                while (telephonyManager.getCallState() == TelephonyManager.CALL_STATE_OFFHOOK) {
+                                    try{
+                                        Thread.sleep(500);
+                                    }
+                                    catch (InterruptedException e)  {
+                                        e.printStackTrace();
+                                    }
+                                }
                                 mPausedByTransientLossOfFocus = false;
                                 mCurrentVolume = 0f;
                                 mPlayer.setVolume(mCurrentVolume);
+
                                 play(); // also queues a fade-in
                             } else {
                                 mMediaplayerHandler.removeMessages(FADEDOWN);
@@ -312,6 +329,15 @@ public class MediaPlaybackService extends Service {
                 // because they were just added.
                 int[] appWidgetIds = intent.getIntArrayExtra(AppWidgetManager.EXTRA_APPWIDGET_IDS);
                 mAppWidgetProvider4x2.performUpdate(MediaPlaybackService.this, appWidgetIds);
+            } else if (ALARM_ALERT_ACTION.equals(action)) {
+                if (isPlaying()) {
+                    mPausedByIncomingAlarm = true;
+                    pause();
+                }
+            } else if (ALARM_DONE_ACTION.equals(action)) {
+                if (mPausedByIncomingAlarm) {
+                    play();
+                }
             }
         }
     };
@@ -335,10 +361,6 @@ public class MediaPlaybackService extends Service {
 
                 case TelephonyManager.CALL_STATE_OFFHOOK:
                     Log.v(LOGTAG, "PhoneState: received CALL_STATE_OFFHOOK");
-                    mPausedByTransientLossOfFocus = false;
-                    if (isPlaying()) {
-                        pause();
-                    }
                     break;
             }
         }
@@ -376,6 +398,11 @@ public class MediaPlaybackService extends Service {
         commandFilter.addAction(CYCLEREPEAT_ACTION);
         commandFilter.addAction(TOGGLESHUFFLE_ACTION);
         commandFilter.addAction(PLAYSTATUS_REQUEST);
+
+        commandFilter.addAction(ALARM_ALERT_ACTION);
+        commandFilter.addAction(ALARM_DONE_ACTION);
+        commandFilter.addAction(ALARM_SNOOZE_ACTION);
+
         registerReceiver(mIntentReceiver, commandFilter);
 
         PowerManager pm = (PowerManager)getSystemService(Context.POWER_SERVICE);
@@ -1207,7 +1234,7 @@ public class MediaPlaybackService extends Service {
                 mIsSupposedToBePlaying = true;
                 notifyChange(PLAYSTATE_CHANGED);
             }
-
+            mPausedByIncomingAlarm = false;
         } else if (mPlayListLen <= 0) {
             // This is mostly so that if you press 'play' on a bluetooth headset
             // without every having played anything before, it will still play
